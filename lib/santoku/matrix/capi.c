@@ -151,11 +151,7 @@ static inline void tk_matrix_rorder_push_row (
         : items[i].value > cutoff)))
       break;
     lua_pushinteger(L, n); // row n
-    lua_newtable(L); // row n t
-    lua_pushinteger(L, items[i].column); // row n t c
-    lua_setfield(L, -2, "column"); // row n t
-    lua_pushnumber(L, items[i].value); // row n t v
-    lua_setfield(L, -2, "value"); // row n t
+    lua_pushinteger(L, items[i].column); // row n c
     lua_settable(L, -3); // row
   }
 }
