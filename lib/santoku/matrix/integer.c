@@ -457,7 +457,6 @@ static inline double *_tk_matrix_mi_scores (
   // Cleanup
   free(counts);
 
-  // Return scores
   return scores;
 }
 
@@ -661,7 +660,7 @@ static inline void tk_matrix_select_mi_proportional (
   free(cursor);
 }
 
-static inline void tk_matrix_select_round_robin (
+static inline void tk_matrix_select_union (
   lua_State *L,
   i64_hash_t *selected,
   tk_matrix_ranked_pair_t *rankings,
@@ -669,29 +668,20 @@ static inline void tk_matrix_select_round_robin (
   uint64_t n_hidden,
   uint64_t top_k
 ) {
-  // Shuffle round robin order
-  uint64_t *shuf = malloc(n_hidden * sizeof(uint64_t));
-  for (uint64_t j = 0; j < n_hidden; j ++)
-    shuf[j] = j;
-  ks_shuffle(u64, n_hidden, shuf);
-
-  // Select top-k round robin
+  // Select top-k union
   int kha;
   uint64_t *offsets = tk_malloc(L, n_hidden * sizeof(uint64_t));
   memset(offsets, 0, n_hidden * sizeof(uint64_t));
   while (true) {
     bool added = false;
-    for (uint64_t s = 0; s < n_hidden && kh_size(selected) < top_k; s ++) {
-      uint64_t j = shuf[s];
+    for (uint64_t j = 0; j < n_hidden && kh_size(selected) < top_k; j ++) {
       tk_matrix_ranked_pair_t *rankings_h = rankings + j * n_visible;
-      for (; offsets[j] < n_visible; offsets[j] ++) {
-        tk_matrix_ranked_pair_t candidate = rankings_h[offsets[j]];
-        kh_put(i64, selected, candidate.v, &kha);
-        if (!kha)
-          continue;
+      if (offsets[j] >= n_visible)
+        continue;
+      tk_matrix_ranked_pair_t candidate = rankings_h[offsets[j] ++];
+      kh_put(i64, selected, candidate.v, &kha);
+      if (kha)
         added = true;
-        break;
-      }
     }
     if (!added)
       break;
@@ -699,12 +689,11 @@ static inline void tk_matrix_select_round_robin (
 
   // Cleanup
   free(offsets);
-  free(shuf);
 }
 
 static int tk_matrix_top_mi (lua_State *L)
 {
-  lua_settop(L, 7);
+  lua_settop(L, 6);
   tk_matrix_t *m0 = tk_matrix_peek(L, 1);
   int64_t *set_bits = m0->data;
   size_t n_set_bits = m0->values;
@@ -713,37 +702,26 @@ static int tk_matrix_top_mi (lua_State *L)
   uint64_t n_visible = tk_lua_checkunsigned(L, 4);
   uint64_t n_hidden = tk_lua_checkunsigned(L, 5);
   uint64_t top_k = tk_lua_checkunsigned(L, 6);
-  const char *strategy = luaL_optstring(L, 7, "round-robin");
 
   // Ensure set_bits is sorted
   ks_introsort(i64, n_set_bits, set_bits);
 
   // Select top-k
   i64_hash_t *selected = kh_init(i64);
-  if (!strcmp(strategy, "round-robin")) {
-    tk_matrix_ranked_pair_t *mi_rankings = tk_matrix_mi_rankings(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden, NULL);
-    tk_matrix_select_round_robin(L, selected, mi_rankings, n_visible, n_hidden, top_k);
-    free(mi_rankings);
-  } else if (!strcmp(strategy, "mi-proportional")) {
-    double *mi_scores = NULL;
-    tk_matrix_ranked_pair_t *mi_rankings = tk_matrix_mi_rankings(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden, &mi_scores);
-    tk_matrix_select_mi_proportional(L, selected, mi_rankings, mi_scores, n_samples, n_visible, n_hidden, top_k);
-    free(mi_scores);
-    free(mi_rankings);
-  } else {
-    tk_lua_verror(L, 2, "invalid selection strategy", strategy);
-  }
+  double *mi_scores = NULL;
+  tk_matrix_ranked_pair_t *mi_rankings = tk_matrix_mi_rankings(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden, &mi_scores);
+  tk_matrix_select_mi_proportional(L, selected, mi_rankings, mi_scores, n_samples, n_visible, n_hidden, top_k);
+  free(mi_scores);
+  free(mi_rankings);
 
   // Push final matrix
   tk_matrix_push_selected_matrix(L, selected);
-
-  // Return top_k matrix
   return 1;
 }
 
 static int tk_matrix_top_chi2 (lua_State *L)
 {
-  lua_settop(L, 7);
+  lua_settop(L, 6);
   tk_matrix_t *m0 = tk_matrix_peek(L, 1);
   int64_t *set_bits = m0->data;
   size_t n_set_bits = m0->values;
@@ -752,31 +730,18 @@ static int tk_matrix_top_chi2 (lua_State *L)
   uint64_t n_visible = tk_lua_checkunsigned(L, 4);
   uint64_t n_hidden = tk_lua_checkunsigned(L, 5);
   uint64_t top_k = tk_lua_checkunsigned(L, 6);
-  const char *strategy = luaL_optstring(L, 7, "round-robin");
 
   // Ensure set_bits is sorted
   ks_introsort(i64, n_set_bits, set_bits);
 
   // Select top-k
   i64_hash_t *selected = kh_init(i64);
-  if (!strcmp(strategy, "round-robin")) {
-    tk_matrix_ranked_pair_t *chi2_rankings = tk_matrix_chi2_rankings(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden);
-    tk_matrix_select_round_robin(L, selected, chi2_rankings, n_visible, n_hidden, top_k);
-    free(chi2_rankings);
-  } else if (!strcmp(strategy, "mi-proportional")) {
-    double *mi_scores = _tk_matrix_mi_scores(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden);
-    tk_matrix_ranked_pair_t *chi2_rankings = tk_matrix_chi2_rankings(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden);
-    tk_matrix_select_mi_proportional(L, selected, chi2_rankings, mi_scores, n_samples, n_visible, n_hidden, top_k);
-    free(mi_scores);
-    free(chi2_rankings);
-  } else {
-    tk_lua_verror(L, 2, "invalid selection strategy", strategy);
-  }
+  tk_matrix_ranked_pair_t *chi2_rankings = tk_matrix_chi2_rankings(L, set_bits, n_set_bits, codes, n_samples, n_visible, n_hidden);
+  tk_matrix_select_union(L, selected, chi2_rankings, n_visible, n_hidden, top_k);
+  free(chi2_rankings);
 
   // Push final matrix
   tk_matrix_push_selected_matrix(L, selected);
-
-  // Return top_k matrix
   return 1;
 }
 
