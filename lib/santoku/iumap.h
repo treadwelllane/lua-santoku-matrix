@@ -70,11 +70,4 @@ static inline tk_ivec_t *tk_iumap_keys (lua_State *L, tk_iumap_t *M)
   return out;
 }
 
-// TODO
-// #define tk_iumap_dup(a)
-// #define tk_iumap_union(a, b)
-// #define tk_iumap_intersect(a, b)
-// #define tk_iumap_difference(a, b)
-// #define tk_iumap_jaccard(a, b)
-
 #endif
