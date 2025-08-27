@@ -408,31 +408,48 @@ static inline tk_cvec_t *tk_ivec_raw_bitmap (
   memset(out, 0, len);
 
   if (flip_interleave) {
-
-    tk_ivec_asc(set_bits, 0, set_bits->n);
-    for (uint64_t idx = 0; idx < set_bits->n; idx ++) {
+    // With flip_interleave, each sample has 2*n_features bits:
+    // - First n_features bits: original bits
+    // - Second n_features bits: complement of the first n_features bits
+    // Each sample is padded to byte boundaries (bytes_per_sample)
+    
+    // First, set the original bits in the first half of each sample
+    for (uint64_t idx = 0; idx < set_bits->n; idx++) {
       int64_t v = set_bits->a[idx];
       if (v < 0)
         continue;
-      uint64_t s = (uint64_t) v / n_features;
-      uint64_t k = (uint64_t) v % n_features;
-      uint64_t new_bit_pos = s * output_features + k;
-      uint64_t byte_off = new_bit_pos / CHAR_BIT;
-      uint8_t bit_off = new_bit_pos & (CHAR_BIT - 1);
+      uint64_t s = (uint64_t) v / n_features;  // sample index
+      uint64_t k = (uint64_t) v % n_features;  // feature index within sample
+      
+      // Set bit in first half of the doubled sample
+      // Each sample starts at byte offset s * bytes_per_sample
+      uint64_t sample_byte_offset = s * bytes_per_sample;
+      uint64_t bit_within_sample = k;  // First half: bits 0 to n_features-1
+      uint64_t byte_off = sample_byte_offset + (bit_within_sample / CHAR_BIT);
+      uint8_t bit_off = bit_within_sample & (CHAR_BIT - 1);
       out[byte_off] |= (uint8_t) (1u << bit_off);
     }
-    size_t p = 0;
-    for (uint64_t y = 0; y < n_samples * n_features; y ++) {
-      if (p < set_bits->n && set_bits->a[p] == (int64_t) y) {
-        p ++;
-        continue;
+    
+    // Now set the complement bits in the second half
+    // For each sample, we need to set bits in the second half that are NOT set in the first half
+    for (uint64_t s = 0; s < n_samples; s++) {
+      uint64_t sample_byte_offset = s * bytes_per_sample;
+      
+      for (uint64_t k = 0; k < n_features; k++) {
+        // Check if this bit is set in the first half
+        uint64_t bit_within_sample_first = k;
+        uint64_t byte_off_first = sample_byte_offset + (bit_within_sample_first / CHAR_BIT);
+        uint8_t bit_off_first = bit_within_sample_first & (CHAR_BIT - 1);
+        bool is_set_first = (out[byte_off_first] & (1u << bit_off_first)) != 0;
+        
+        // If NOT set in first half, then set it in second half (complement)
+        if (!is_set_first) {
+          uint64_t bit_within_sample_second = n_features + k;  // Second half: bits n_features to 2*n_features-1
+          uint64_t byte_off_second = sample_byte_offset + (bit_within_sample_second / CHAR_BIT);
+          uint8_t bit_off_second = bit_within_sample_second & (CHAR_BIT - 1);
+          out[byte_off_second] |= (uint8_t) (1u << bit_off_second);
+        }
       }
-      uint64_t s = y / n_features;
-      uint64_t k = y % n_features;
-      uint64_t new_bit_pos = s * output_features + n_features + k;
-      uint64_t byte_off = new_bit_pos / CHAR_BIT;
-      uint8_t bit_off = new_bit_pos & (CHAR_BIT - 1);
-      out[byte_off] |= (uint8_t)(1u << bit_off);
     }
 
   } else {
