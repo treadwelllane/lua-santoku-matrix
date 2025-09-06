@@ -317,10 +317,13 @@ static inline void tk_ivec_bits_copy (
   tk_ivec_t *src_bits,
   tk_ivec_t *selected_features,
   tk_ivec_t *sample_ids,
-  uint64_t n_visible
+  uint64_t n_visible,
+  uint64_t dest_sample  // 0 = overwrite, >0 = append after this many samples
 ) {
-  // Clear destination
-  tk_ivec_clear(dest);
+  // Clear destination if dest_sample == 0 (overwrite mode)
+  if (dest_sample == 0) {
+    tk_ivec_clear(dest);
+  }
 
   // Return if no source bits
   if (src_bits == NULL || src_bits->n == 0)
@@ -348,6 +351,10 @@ static inline void tk_ivec_bits_copy (
   int64_t *sample_map = NULL;
   uint64_t max_sample = 0;
   if (sample_ids != NULL && sample_ids->n > 0) {
+    // Create sample set for quick lookup
+    sample_set = tk_iuset_from_ivec(sample_ids);
+    
+    // Always create sample remapping when filtering (ivec is always "packed")
     // First find max sample to allocate map
     for (uint64_t i = 0; i < src_bits->n; i ++) {
       if (src_bits->a[i] >= 0) {
@@ -356,10 +363,7 @@ static inline void tk_ivec_bits_copy (
       }
     }
 
-    // Create sample set for quick lookup
-    sample_set = tk_iuset_from_ivec(sample_ids);
-
-    // Create sample remapping
+    // Create sample remapping for compacted output
     sample_map = malloc((max_sample + 1) * sizeof(int64_t));
     if (!sample_map) {
       if (feature_map) free(feature_map);
@@ -391,10 +395,14 @@ static inline void tk_ivec_bits_copy (
     if (sample_set != NULL) {
       if (!tk_iuset_contains(sample_set, (int64_t) sample))
         continue;
-      if (sample <= max_sample)
+      // Always use sample_map for remapping when filtering
+      if (sample <= max_sample) {
         new_sample = sample_map[sample];
-      if (new_sample < 0)
-        continue;
+        if (new_sample < 0)
+          continue;
+      } else {
+        continue;  // Sample index out of range
+      }
     }
 
     // Check and remap feature if filtering
@@ -404,6 +412,9 @@ static inline void tk_ivec_bits_copy (
       if (new_feature < 0)
         continue;
     }
+
+    // Add dest_sample offset to the final sample index
+    new_sample += (int64_t) dest_sample;
 
     // Add remapped index to destination
     int64_t new_val = new_sample * (int64_t) n_new_features + new_feature;
@@ -425,7 +436,9 @@ static inline void tk_cvec_bits_copy (
   tk_cvec_t *src_bitmap,
   tk_ivec_t *selected_features,
   tk_ivec_t *sample_ids,
-  uint64_t n_features
+  uint64_t n_features,
+  uint64_t dest_sample,  // Sample index in destination 
+  uint64_t dest_stride  // 0 = byte-aligned, >0 = fixed bit stride between rows
 ) {
   uint64_t n_samples = src_bitmap->n / TK_CVEC_BITS_BYTES(n_features);
   // Create sample set if filtering by samples
@@ -451,14 +464,64 @@ static inline void tk_cvec_bits_copy (
     n_output_samples = n_samples;
   }
 
+  // Determine stride
+  uint64_t row_stride_bits;
+  bool use_packed;
+  
+  if (dest_stride > 0) {
+    // Explicit stride: packed mode with fixed stride
+    // Round up to byte boundary for proper alignment
+    use_packed = true;
+    row_stride_bits = TK_CVEC_BITS_BYTES(dest_stride) * CHAR_BIT;
+  } else {
+    // Default: byte-aligned mode
+    use_packed = false;
+    row_stride_bits = out_bytes_per_sample * CHAR_BIT;
+  }
+  
+  // Calculate total bytes needed for the destination
+  uint64_t final_samples = dest_sample + n_output_samples;
+  uint64_t total_bytes;
+  
+  if (use_packed) {
+    // Packed mode: use bit-level stride
+    uint64_t total_bits = dest_sample * row_stride_bits + n_output_samples * n_selected_features;
+    // If using fixed stride, need space for full final row
+    if (dest_stride > 0) {
+      total_bits = (dest_sample + 1) * row_stride_bits;
+    }
+    total_bytes = TK_CVEC_BITS_BYTES(total_bits);
+  } else {
+    // Unpacked mode: byte-aligned samples
+    total_bytes = final_samples * out_bytes_per_sample;
+  }
+  
   // Ensure destination capacity
-  uint64_t total_bytes = n_output_samples * out_bytes_per_sample;
   tk_cvec_ensure(dest, total_bytes);
-  dest->n = total_bytes;
   uint8_t *dest_data = (uint8_t *)dest->a;
+  
+  if (dest_sample == 0) {
+    // Overwrite mode: clear everything and set new size
+    dest->n = total_bytes;
+    memset(dest_data, 0, total_bytes);
+  } else {
+    // Append mode: extend size and zero only new portion
+    uint64_t old_size = dest->n;
+    dest->n = total_bytes;
+    if (total_bytes > old_size) {
+      memset(dest_data + old_size, 0, total_bytes - old_size);
+    }
+  }
 
   // Process samples
-  uint64_t write_sample = 0;
+  uint64_t write_sample = dest_sample;  // Start writing at dest_sample
+  uint64_t write_bit_offset = 0;
+  
+  if (use_packed) {
+    // Calculate starting bit position using stride
+    write_bit_offset = dest_sample * row_stride_bits;
+  }
+  
   for (uint64_t s = 0; s < n_samples; s ++) {
     // Skip if sample not in filter set
     if (sample_set != NULL && !tk_iuset_contains(sample_set, (int64_t) s))
@@ -494,10 +557,29 @@ static inline void tk_cvec_bits_copy (
     }
 
     // Copy result to destination
-    uint64_t out_offset = write_sample * out_bytes_per_sample;
-    memcpy(dest_data + out_offset, temp, out_bytes_per_sample);
+    if (use_packed) {
+      // Packed mode: write bits at current offset
+      for (uint64_t i = 0; i < n_selected_features; i++) {
+        uint64_t src_byte = i / CHAR_BIT;
+        uint8_t src_bit_pos = i % CHAR_BIT;
+        
+        if (temp[src_byte] & (1u << src_bit_pos)) {
+          uint64_t dst_byte = write_bit_offset / CHAR_BIT;
+          uint8_t dst_bit_pos = write_bit_offset % CHAR_BIT;
+          dest_data[dst_byte] |= (1u << dst_bit_pos);
+        }
+        write_bit_offset++;
+      }
+      // write_bit_offset already advanced by n_selected_features bits for this sample
+      // Continue with next sample in the same row (for concatenation)
+    } else {
+      // In unpacked mode, maintain byte alignment per sample
+      uint64_t out_offset = write_sample * out_bytes_per_sample;
+      memcpy(dest_data + out_offset, temp, out_bytes_per_sample);
+      write_sample++;
+    }
+    
     free(temp);
-    write_sample ++;
   }
 
   if (sample_set != NULL)
