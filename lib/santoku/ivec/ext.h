@@ -56,7 +56,8 @@ static inline void tk_ivec_worker (void *dp, int sig)
       for (uint64_t b = data->hfirst; b <= data->hlast; b ++) {
         double *scores_b = scores->a + b * n_visible;
         for (uint64_t f = 0; f < n_visible; f ++) {
-          int64_t A = active_counts->a[f * n_hidden + b]; // f=1, b=1
+          int64_t A = active_counts->a[f * n_hidden + b];
+
           int64_t G = global_counts->a[b];// total b=1
           int64_t C = feat_counts->a[f];
           if (C == 0 || G == 0 || C == (int64_t) n_samples || G == (int64_t) n_samples) {
@@ -89,9 +90,11 @@ static inline void tk_ivec_worker (void *dp, int sig)
       for (int64_t j = (int64_t) data->hfirst; j <= (int64_t) data->hlast; j ++) {
         double *scores_h = scores->a + j * (int64_t) n_visible;
         for (int64_t i = 0; i < (int64_t) n_visible; i ++) {
-          int64_t *c = counts->a + i * (int64_t) n_hidden * 4 + j * 4;
+          int64_t c[4];
+          int64_t *counts_ptr = counts->a + i * (int64_t) n_hidden * 4 + j * 4;
           for (int k = 0; k < 4; k ++)
-            c[k] += 1;
+            c[k] = counts_ptr[k] + 1;  // Add 1 for smoothing
+
           double total = c[0] + c[1] + c[2] + c[3];
           double mi = 0.0;
           if (total == 0.0)
@@ -411,7 +414,8 @@ static inline void tk_ivec_bits_extend_mapped (
   tk_ivec_t *aids,
   tk_ivec_t *bids,
   uint64_t n_feat,
-  uint64_t n_extfeat
+  uint64_t n_extfeat,
+  bool project
 ) {
   // Sort bit vectors for efficient processing
   tk_ivec_asc(base, 0, base->n);
@@ -444,23 +448,31 @@ static inline void tk_ivec_bits_extend_mapped (
       // B sample has matching ID in A - maps to A's position
       b_to_final[bi] = tk_iumap_value(a_id_to_pos, khi);
     } else {
-      // B-only sample - gets new position after A samples
-      b_to_final[bi] = next_pos++;
-      n_only_b++;
+      // B-only sample
+      if (!project) {
+        // When not projecting, B-only samples get new positions
+        b_to_final[bi] = next_pos++;
+        n_only_b++;
+      } else {
+        // When projecting, B-only samples are excluded
+        b_to_final[bi] = -1;
+      }
     }
   }
 
-  uint64_t final_n_samples = aids->n + n_only_b;
+  uint64_t final_n_samples = project ? aids->n : (aids->n + n_only_b);
   uint64_t n_total_feat = n_feat + n_extfeat;
 
-  // Phase 3: Extend aids with B-only IDs
+  // Phase 3: Extend aids with B-only IDs (only when not projecting)
   size_t old_aids_n = aids->n;
-  tk_ivec_ensure(aids, final_n_samples);
+  if (!project) {
+    tk_ivec_ensure(aids, final_n_samples);
 
-  for (size_t i = 0; i < bids->n; i++) {
-    if (b_to_final[i] >= (int64_t)old_aids_n) {
-      // This is a B-only ID, add it to aids
-      aids->a[aids->n++] = bids->a[i];
+    for (size_t i = 0; i < bids->n; i++) {
+      if (b_to_final[i] >= (int64_t)old_aids_n) {
+        // This is a B-only ID, add it to aids
+        aids->a[aids->n++] = bids->a[i];
+      }
     }
   }
 
@@ -539,10 +551,13 @@ static inline tk_dvec_t *tk_ivec_bits_score_chi2 (
   ctx.n_visible = n_visible;
   ctx.n_hidden = n_hidden;
   ctx.n_samples = n_samples;
+
+  // Always use dense counting for chi2
   ctx.active_counts = tk_ivec_create(L, ctx.n_visible * ctx.n_hidden, 0, 0);
+  tk_ivec_zero(ctx.active_counts);
+
   ctx.global_counts = tk_ivec_create(L, ctx.n_hidden, 0, 0);
   ctx.feat_counts  = tk_ivec_create(L, ctx.n_visible, 0, 0);
-  tk_ivec_zero(ctx.active_counts);
   tk_ivec_zero(ctx.global_counts);
   tk_ivec_zero(ctx.feat_counts);
   for (unsigned int i = 0; i < n_threads; i ++) {
@@ -586,23 +601,28 @@ static inline tk_dvec_t *tk_ivec_bits_score_chi2 (
       }
     }
   } else if (labels != NULL) {
-    for (uint64_t i = 0; i < ctx.set_bits->n; i ++) {
-      if (ctx.set_bits->a[i] < 0)
+    // Labels is a single label per sample (labels[i] = label for sample i)
+    for (uint64_t s = 0; s < n_samples; s++) {
+      if (s >= ctx.labels->n || ctx.labels->a[s] < 0)
         continue;
-      uint64_t s = (uint64_t) ctx.set_bits->a[i] / ctx.n_visible;
-      uint64_t f = (uint64_t) ctx.set_bits->a[i] % ctx.n_visible;
-      ctx.feat_counts->a[f] ++;
-      int64_t label = ctx.labels->a[s];  // This sample’s class
-      if (label < 0)
+      uint64_t b = (uint64_t) ctx.labels->a[s];
+      if (b >= ctx.n_hidden)
         continue;
-      if ((size_t) label < ctx.n_hidden)     // Safety check
-        ctx.active_counts->a[f * ctx.n_hidden + (uint64_t) label] ++;
+      ctx.global_counts->a[b]++;
     }
-    tk_ivec_zero(ctx.global_counts);
-    for (uint64_t s = 0; s < ctx.n_samples; s ++) {
-      int64_t label = ctx.labels->a[s];
-      if ((size_t) label < ctx.n_hidden)
-        ctx.global_counts->a[label] ++;
+    for (uint64_t i = 0; i < ctx.set_bits->n; i++) {
+      int64_t set_bit = ctx.set_bits->a[i];
+      if (set_bit < 0)
+        continue;
+      uint64_t s = (uint64_t) set_bit / ctx.n_visible;
+      uint64_t f = (uint64_t) set_bit % ctx.n_visible;
+      ctx.feat_counts->a[f]++;
+      if (s >= ctx.labels->n || ctx.labels->a[s] < 0)
+        continue;
+      uint64_t b = (uint64_t) ctx.labels->a[s];
+      if (b >= ctx.n_hidden)
+        continue;
+      ctx.active_counts->a[f * ctx.n_hidden + b]++;
     }
   }
 
@@ -612,6 +632,7 @@ static inline tk_dvec_t *tk_ivec_bits_score_chi2 (
   tk_threads_signal(pool, TK_IVEC_CHI2, 0);
   tk_threads_destroy(pool);
 
+  // Cleanup
   tk_ivec_destroy(ctx.active_counts);
   tk_ivec_destroy(ctx.global_counts);
   tk_ivec_destroy(ctx.feat_counts);
@@ -638,6 +659,8 @@ static inline tk_dvec_t *tk_ivec_bits_score_mi (
   ctx.n_visible = n_visible;
   ctx.n_hidden = n_hidden;
   ctx.n_samples = n_samples;
+
+  // Always use dense counting for MI
   ctx.counts = tk_ivec_create(L, ctx.n_visible * ctx.n_hidden * 4, 0, 0);
   tk_ivec_zero(ctx.counts);
   for (unsigned int i = 0; i < n_threads; i ++) {
@@ -684,35 +707,54 @@ static inline tk_dvec_t *tk_ivec_bits_score_mi (
       }
     }
   } else if (ctx.labels != NULL) {
+    // Labels is a single label per sample (labels[i] = label for sample i)
+    // For MI, we need to count all 4 combinations
     int64_t last_set_bit = -1;
-    for (uint64_t i = 0; i < set_bits->n; i ++) {
+    for (uint64_t i = 0; i < ctx.set_bits->n; i++) {
       int64_t set_bit = ctx.set_bits->a[i];
-      if (set_bit < 0) continue;
-      for (uint64_t unset_bit = (uint64_t) last_set_bit + 1; unset_bit < (uint64_t) set_bit; unset_bit ++) {
-        uint64_t sample = unset_bit / ctx.n_visible;
-        uint64_t visible = unset_bit % ctx.n_visible;
-        int64_t label = ctx.labels->a[sample];
-        for (uint64_t j = 0; j < ctx.n_hidden; j ++) {
-          bool hidden = ((size_t)j == (size_t)label);
-          ctx.counts->a[visible * ctx.n_hidden * 4 + j * 4 + (hidden ? 1 : 0)] ++;
+      if (set_bit < 0)
+        continue;
+
+      // Count unset features (feature=0)
+      for (int64_t unset_bit = last_set_bit + 1; unset_bit < set_bit; unset_bit++) {
+        uint64_t sample = (uint64_t) unset_bit / ctx.n_visible;
+        uint64_t visible = (uint64_t) unset_bit % ctx.n_visible;
+
+        // For each label value
+        for (uint64_t j = 0; j < ctx.n_hidden; j++) {
+          bool label_is_j = (sample < ctx.labels->n &&
+                            ctx.labels->a[sample] >= 0 &&
+                            (uint64_t)ctx.labels->a[sample] == j);
+          ctx.counts->a[visible * ctx.n_hidden * 4 + j * 4 + (label_is_j ? 1 : 0)]++;
         }
       }
+
+      // Count set feature (feature=1)
       uint64_t sample = (uint64_t) set_bit / ctx.n_visible;
       uint64_t visible = (uint64_t) set_bit % ctx.n_visible;
-      int64_t label = ctx.labels->a[sample];
-      for (uint64_t j = 0; j < ctx.n_hidden; j ++) {
-        bool hidden = ((size_t)j == (size_t)label);
-        ctx.counts->a[visible * ctx.n_hidden * 4 + j * 4 + 2 + (hidden ? 1 : 0)] ++;
+
+      // For each label value
+      for (uint64_t j = 0; j < ctx.n_hidden; j++) {
+        bool label_is_j = (sample < ctx.labels->n &&
+                          ctx.labels->a[sample] >= 0 &&
+                          (uint64_t)ctx.labels->a[sample] == j);
+        ctx.counts->a[visible * ctx.n_hidden * 4 + j * 4 + 2 + (label_is_j ? 1 : 0)]++;
       }
+
       last_set_bit = set_bit;
     }
-    for (uint64_t unset_bit = (uint64_t) last_set_bit + 1; unset_bit < ctx.n_samples * ctx.n_visible; unset_bit ++) {
+
+    // Count remaining unset features
+    for (uint64_t unset_bit = (uint64_t) last_set_bit + 1; unset_bit < n_samples * n_visible; unset_bit++) {
       uint64_t sample = unset_bit / ctx.n_visible;
       uint64_t visible = unset_bit % ctx.n_visible;
-      int64_t label = ctx.labels->a[sample];
-      for (uint64_t j = 0; j < ctx.n_hidden; j ++) {
-        bool hidden = ((size_t)j == (size_t)label);
-        ctx.counts->a[visible * ctx.n_hidden * 4 + j * 4 + (hidden ? 1 : 0)] ++;
+
+      // For each label value
+      for (uint64_t j = 0; j < ctx.n_hidden; j++) {
+        bool label_is_j = (sample < ctx.labels->n &&
+                          ctx.labels->a[sample] >= 0 &&
+                          (uint64_t)ctx.labels->a[sample] == j);
+        ctx.counts->a[visible * ctx.n_hidden * 4 + j * 4 + (label_is_j ? 1 : 0)]++;
       }
     }
   }
