@@ -13,7 +13,6 @@
 #include <stdatomic.h>
 #include <math.h>
 
-// Bit operations macros
 #ifndef TK_CVEC_BITS_BYTES
 #define TK_CVEC_BITS_BYTES(n) (((n) + CHAR_BIT - 1) / CHAR_BIT)
 #endif
@@ -24,13 +23,10 @@
 #define TK_CVEC_BITS_BIT(n) ((n) % CHAR_BIT)
 #endif
 
-// Common bit masks
 #define TK_CVEC_ZERO_MASK 0x00
 #define TK_CVEC_ALL_MASK 0xFF
-#define TK_CVEC_POS_MASK 0x55  // 01010101 - even bits
-#define TK_CVEC_NEG_MASK 0xAA  // 10101010 - odd bits
-
-// popcount implementation if not available
+#define TK_CVEC_POS_MASK 0x55
+#define TK_CVEC_NEG_MASK 0xAA
 #ifndef tk_cvec_byte_popcount
 #ifdef __GNUC__
 #define tk_cvec_byte_popcount(x) __builtin_popcount(x)
@@ -43,10 +39,7 @@ static inline int tk_cvec_byte_popcount (unsigned int x) {
 #endif
 #endif
 
-static inline void tk_cvec_bits_flip_interleave (
-  tk_cvec_t *v,
-  uint64_t n_features
-) {
+static inline void tk_cvec_bits_flip_interleave (tk_cvec_t *v, uint64_t n_features) {
   if (n_features == 0)
     return;
 
@@ -58,44 +51,29 @@ static inline void tk_cvec_bits_flip_interleave (
   uint64_t output_features = n_features * 2;
   uint64_t output_bytes_per_sample = TK_CVEC_BITS_BYTES(output_features);
   uint64_t output_size = n_samples * output_bytes_per_sample;
-
-  // Ensure we have enough space for the doubled output
   tk_cvec_ensure(v, output_size);
   uint8_t *data = (uint8_t *)v->a;
-
-  // Calculate byte layout
   uint64_t full_bytes = n_features / CHAR_BIT;
   uint64_t remaining_bits = n_features % CHAR_BIT;
 
-  // Process samples in reverse order to avoid overwriting unprocessed data
-  // Since output is larger than input, we work backwards
+  uint8_t *temp = malloc(input_bytes_per_sample);
+  if (!temp) {
+    v->n = output_size;
+    return;
+  }
   for (uint64_t s = n_samples; s > 0; s--) {
     uint64_t idx = s - 1;
     uint64_t input_sample_offset = idx * input_bytes_per_sample;
     uint64_t output_sample_offset = idx * output_bytes_per_sample;
 
-    // Use heap allocation for temporary buffer to avoid stack overflow
-    uint8_t *temp = malloc(input_bytes_per_sample);
-    if (!temp) {
-      // On allocation failure, just return without modifying
-      v->n = output_size;
-      return;
-    }
     memcpy(temp, data + input_sample_offset, input_bytes_per_sample);
-
-    // Clear the output area for this sample
     memset(data + output_sample_offset, 0, output_bytes_per_sample);
-
-    // Copy original bits to first half
     memcpy(data + output_sample_offset, temp, input_bytes_per_sample);
-
-    // Create the complement in the second half
     uint64_t second_half_bit_offset = n_features;
     uint64_t second_half_byte_offset = second_half_bit_offset / CHAR_BIT;
     uint8_t second_half_bit_shift = second_half_bit_offset & (CHAR_BIT - 1);
 
     if (second_half_bit_shift == 0) {
-      // Aligned case: second half starts at byte boundary
       for (uint64_t i = 0; i < full_bytes; i ++) {
         data[output_sample_offset + second_half_byte_offset + i] = ~temp[i];
       }
@@ -105,14 +83,12 @@ static inline void tk_cvec_bits_flip_interleave (
         data[output_sample_offset + second_half_byte_offset + full_bytes] = (~last_byte) & mask;
       }
     } else {
-      // Unaligned case: second half starts mid-byte
       uint8_t carry = 0;
       for (uint64_t i = 0; i < full_bytes; i ++) {
         uint8_t complement = ~temp[i];
         data[output_sample_offset + second_half_byte_offset + i] |= (complement << second_half_bit_shift) | carry;
         carry = complement >> (CHAR_BIT - second_half_bit_shift);
       }
-      // Handle the last partial byte if any
       if (remaining_bits > 0) {
         uint8_t last_byte = temp[full_bytes];
         uint8_t mask = (1u << remaining_bits) - 1;
@@ -126,16 +102,11 @@ static inline void tk_cvec_bits_flip_interleave (
         data[output_sample_offset + second_half_byte_offset + full_bytes] |= carry;
       }
     }
-
-    // Free the temporary buffer
-    free(temp);
   }
 
-  // Update the size to reflect the new doubled size
+  free(temp);
   v->n = output_size;
 }
-
-// Internal bit operations on uint8_t arrays
 
 static inline uint64_t tk_cvec_bits_popcount (
   const uint8_t *data,
@@ -253,7 +224,6 @@ static inline void tk_cvec_bits_xor (
   }
 }
 
-// Convert between ivec (sparse bit indices) and cvec (packed bytes)
 static inline tk_ivec_t *tk_cvec_bits_to_ivec (
   lua_State *L,
   tk_cvec_t *bitmap,
@@ -263,7 +233,6 @@ static inline tk_ivec_t *tk_cvec_bits_to_ivec (
   uint64_t bytes_per_sample = TK_CVEC_BITS_BYTES(n_features);
   uint64_t n_samples = bitmap->n / bytes_per_sample;
 
-  // Count total set bits to allocate ivec
   uint64_t total_bits = 0;
   for (uint64_t s = 0; s < n_samples; s++) {
     uint64_t offset = s * bytes_per_sample;
@@ -326,12 +295,8 @@ static inline void tk_cvec_bits_rearrange (
   uint64_t bytes_per_sample = TK_CVEC_BITS_BYTES(n_features);
   uint64_t n_samples = ids->n;
   uint8_t *data = (uint8_t *)bitmap->a;
-
-  // Create temporary buffer for rearranged data
   uint8_t *temp = malloc(n_samples * bytes_per_sample);
   if (!temp) return;
-
-  // Copy samples in new order
   for (uint64_t i = 0; i < n_samples; i++) {
     int64_t src_idx = ids->a[i];
     if (src_idx < 0) continue;
@@ -339,11 +304,8 @@ static inline void tk_cvec_bits_rearrange (
            data + (uint64_t) src_idx * bytes_per_sample,
            bytes_per_sample);
   }
-
-  // Copy back to original
   memcpy(data, temp, n_samples * bytes_per_sample);
   free(temp);
-
   bitmap->n = n_samples * bytes_per_sample;
 }
 
@@ -358,33 +320,23 @@ static inline void tk_cvec_bits_extend (
   uint64_t base_bytes_per_sample = TK_CVEC_BITS_BYTES(n_base_features);
   uint64_t ext_bytes_per_sample = TK_CVEC_BITS_BYTES(n_ext_features);
   uint64_t total_bytes_per_sample = TK_CVEC_BITS_BYTES(n_total_features);
-
-  // Ensure base has enough capacity
   tk_cvec_ensure(base, n_samples * total_bytes_per_sample);
   uint8_t *base_data = (uint8_t *)base->a;
   uint8_t *ext_data = (uint8_t *)ext->a;
-
-  // Process samples backwards to avoid overwriting
+  uint8_t *temp = malloc(total_bytes_per_sample);
+  if (!temp)
+    return;
   for (int64_t s = (int64_t) n_samples - 1; s >= 0; s--) {
-    uint8_t *temp = malloc(total_bytes_per_sample);
-    if (!temp) return;
     memset(temp, 0, total_bytes_per_sample);
-
-    // Copy base features
     uint64_t base_offset = (uint64_t) s * base_bytes_per_sample;
     memcpy(temp, base_data + base_offset, base_bytes_per_sample);
-
-    // Copy extension features (bit-shifted if necessary)
     uint64_t ext_offset = (uint64_t) s * ext_bytes_per_sample;
     uint64_t ext_bit_offset = n_base_features;
     uint64_t ext_byte_offset = ext_bit_offset / CHAR_BIT;
     uint8_t ext_bit_shift = ext_bit_offset % CHAR_BIT;
-
     if (ext_bit_shift == 0) {
-      // Aligned case
       memcpy(temp + ext_byte_offset, ext_data + ext_offset, ext_bytes_per_sample);
     } else {
-      // Unaligned case
       uint8_t carry = 0;
       for (uint64_t i = 0; i < ext_bytes_per_sample; i++) {
         uint8_t byte = ext_data[ext_offset + i];
@@ -395,13 +347,10 @@ static inline void tk_cvec_bits_extend (
         temp[ext_byte_offset + ext_bytes_per_sample] |= carry;
       }
     }
-
-    // Copy result to output location
     uint64_t out_offset = (uint64_t) s * total_bytes_per_sample;
     memcpy(base_data + out_offset, temp, total_bytes_per_sample);
-    free(temp);
   }
-
+  free(temp);
   base->n = n_samples * total_bytes_per_sample;
 }
 
@@ -418,62 +367,41 @@ static inline void tk_cvec_bits_extend_mapped (
   uint64_t base_bytes_per_sample = TK_CVEC_BITS_BYTES(n_base_features);
   uint64_t ext_bytes_per_sample = TK_CVEC_BITS_BYTES(n_ext_features);
   uint64_t total_bytes_per_sample = TK_CVEC_BITS_BYTES(n_total_features);
-
-  // Phase 1: Create ID-to-position map for aids
   tk_iumap_t *a_id_to_pos = tk_iumap_from_ivec(aids);
-
-  // Phase 2: Count B-only samples and build mapping
   uint64_t n_only_b = 0;
   int64_t *b_to_final = (int64_t *)malloc(bids->n * sizeof(int64_t));
-
   if (!b_to_final) {
     tk_iumap_destroy(a_id_to_pos);
     return;
   }
-
-  // Build B-to-final mapping using ID lookups
   int64_t next_pos = (int64_t)aids->n;
   for (size_t bi = 0; bi < bids->n; bi++) {
     khint_t khi = tk_iumap_get(a_id_to_pos, bids->a[bi]);
     if (khi != tk_iumap_end(a_id_to_pos)) {
-      // B sample has matching ID in A - maps to A's position
       b_to_final[bi] = tk_iumap_value(a_id_to_pos, khi);
     } else {
-      // B-only sample
       if (!project) {
-        // When not projecting, B-only samples get new positions
         b_to_final[bi] = next_pos++;
         n_only_b++;
       } else {
-        // When projecting, B-only samples are excluded
         b_to_final[bi] = -1;
       }
     }
   }
-
   uint64_t final_n_samples = project ? aids->n : (aids->n + n_only_b);
-
-  // Phase 3: Extend aids with B-only IDs (only when not projecting)
   size_t old_aids_n = aids->n;
   if (!project) {
     tk_ivec_ensure(aids, final_n_samples);
-
     for (size_t i = 0; i < bids->n; i++) {
       if (b_to_final[i] >= (int64_t)old_aids_n) {
         aids->a[aids->n++] = bids->a[i];
       }
     }
   }
-
-  // Phase 4: Resize base and rearrange data
   tk_cvec_ensure(base, final_n_samples * total_bytes_per_sample);
   uint8_t *base_data = (uint8_t *)base->a;
   uint8_t *ext_data = (uint8_t *)ext->a;
-
-  // Create B ID-to-position map for efficient lookups
   tk_iumap_t *b_id_to_pos = tk_iumap_from_ivec(bids);
-
-  // Allocate temporary buffer for the extended result
   uint8_t *new_data = malloc(final_n_samples * total_bytes_per_sample);
   if (!new_data) {
     free(b_to_final);
@@ -482,29 +410,20 @@ static inline void tk_cvec_bits_extend_mapped (
     return;
   }
   memset(new_data, 0, final_n_samples * total_bytes_per_sample);
-
-  // Process A samples - copy and extend with zeros or B data
   for (size_t ai = 0; ai < old_aids_n; ai++) {
     uint64_t dest_offset = ai * total_bytes_per_sample;
     uint64_t src_offset = ai * base_bytes_per_sample;
-    // Copy A's features
     memcpy(new_data + dest_offset, base_data + src_offset, base_bytes_per_sample);
-
-    // Find if this A sample has B data using iumap
     khint_t khi = tk_iumap_get(b_id_to_pos, aids->a[ai]);
     if (khi != tk_iumap_end(b_id_to_pos)) {
       int64_t b_idx = tk_iumap_value(b_id_to_pos, khi);
-      // Copy B's features (bit-shifted if necessary)
       uint64_t ext_src_offset = (uint64_t)b_idx * ext_bytes_per_sample;
       uint64_t ext_bit_offset = n_base_features;
       uint64_t ext_byte_offset = ext_bit_offset / CHAR_BIT;
       uint8_t ext_bit_shift = ext_bit_offset % CHAR_BIT;
       if (ext_bit_shift == 0) {
-        // Aligned case
-        memcpy(new_data + dest_offset + ext_byte_offset,
-               ext_data + ext_src_offset, ext_bytes_per_sample);
+        memcpy(new_data + dest_offset + ext_byte_offset, ext_data + ext_src_offset, ext_bytes_per_sample);
       } else {
-        // Unaligned case
         uint8_t carry = 0;
         for (uint64_t i = 0; i < ext_bytes_per_sample; i++) {
           uint8_t byte = ext_data[ext_src_offset + i];
@@ -516,24 +435,17 @@ static inline void tk_cvec_bits_extend_mapped (
         }
       }
     }
-    // If no B data, the extended features remain zeros
   }
-
-  // Process B-only samples
   for (size_t bi = 0; bi < bids->n; bi++) {
     int64_t final_pos = b_to_final[bi];
     if (final_pos >= (int64_t)old_aids_n) {
-      // This is a B-only sample
       uint64_t dest_offset = (uint64_t)final_pos * total_bytes_per_sample;
       uint64_t src_offset = bi * ext_bytes_per_sample;
-      // A features are zeros (already memset)
-      // Copy B features
       uint64_t ext_bit_offset = n_base_features;
       uint64_t ext_byte_offset = ext_bit_offset / CHAR_BIT;
       uint8_t ext_bit_shift = ext_bit_offset % CHAR_BIT;
       if (ext_bit_shift == 0) {
-        memcpy(new_data + dest_offset + ext_byte_offset,
-               ext_data + src_offset, ext_bytes_per_sample);
+        memcpy(new_data + dest_offset + ext_byte_offset, ext_data + src_offset, ext_bytes_per_sample);
       } else {
         uint8_t carry = 0;
         for (uint64_t i = 0; i < ext_bytes_per_sample; i++) {
@@ -547,8 +459,6 @@ static inline void tk_cvec_bits_extend_mapped (
       }
     }
   }
-
-  // Copy result back to base
   memcpy(base_data, new_data, final_n_samples * total_bytes_per_sample);
   free(new_data);
   free(b_to_final);
@@ -557,39 +467,26 @@ static inline void tk_cvec_bits_extend_mapped (
   base->n = final_n_samples * total_bytes_per_sample;
 }
 
-
-
-
 static inline void tk_cvec_bits_to_ascii (
   lua_State *L,
   const tk_cvec_t *bitmap,
   uint64_t start_bit,
   uint64_t end_bit
 ) {
-  // Calculate number of bits in range
   uint64_t n_bits = end_bit - start_bit;
-
-  // Create temporary cvec with one char per bit
-  tk_cvec_t *ascii = tk_cvec_create(L, n_bits + 1, 0, 0); // +1 for null terminator
-
+  tk_cvec_t *ascii = tk_cvec_create(L, n_bits + 1, 0, 0);
   const uint8_t *data = (const uint8_t *)bitmap->a;
   char *out = ascii->a;
-
-  // Process each bit in the specified range
   for (uint64_t i = 0; i < n_bits; i++) {
     uint64_t bit_pos = start_bit + i;
     uint64_t byte_idx = bit_pos / 8;
     uint64_t bit_idx = bit_pos % 8;
     out[i] = (data[byte_idx] & (1 << bit_idx)) ? '1' : '0';
   }
-
   ascii->n = n_bits;
-  out[n_bits] = '\0'; // null terminate
-
-  // Push the string and pop the temporary cvec
+  out[n_bits] = '\0';
   lua_pushstring(L, out);
-  lua_remove(L, -2); // Remove the temporary cvec from stack
+  lua_remove(L, -2);
 }
-
 
 #endif

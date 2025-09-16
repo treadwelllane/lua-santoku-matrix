@@ -28,11 +28,4 @@ typedef khash_t(tk_cuset) tk_cuset_t;
 		code;	\
 	} }
 
-// TODO
-// #define tk_cuset_dup(a)
-// #define tk_cuset_union(a, b)
-// #define tk_cuset_intersect(a, b)
-// #define tk_cuset_difference(a, b)
-// #define tk_cuset_jaccard(a, b)
-
 #endif
