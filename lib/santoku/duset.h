@@ -38,11 +38,4 @@ static inline void tk_duset_dump (tk_duset_t *s, tk_dvec_t *v)
   }))
 }
 
-// TODO
-// #define tk_duset_dup(a)
-// #define tk_duset_union(a, b)
-// #define tk_duset_intersect(a, b)
-// #define tk_duset_difference(a, b)
-// #define tk_duset_jaccard(a, b)
-
 #endif
