@@ -209,6 +209,30 @@ static inline size_t tk_dvec_scores_max_gap (
   return max_idx;
 }
 
+// Maximum drop: find the largest decrease between consecutive scores
+// Returns the index before the largest drop (last value before degradation)
+static inline size_t tk_dvec_scores_max_drop (
+  double *scores,
+  size_t n,
+  double *out_val
+) {
+  if (n < 2) {
+    if (out_val) *out_val = (n > 0) ? scores[0] : 0.0;
+    return 0;
+  }
+  double max_drop = 0.0;
+  size_t max_idx = 0;
+  for (size_t i = 0; i < n - 1; i++) {
+    double drop = scores[i] - scores[i + 1];
+    if (drop > max_drop) {
+      max_drop = drop;
+      max_idx = i;
+    }
+  }
+  if (out_val) *out_val = scores[max_idx];
+  return max_idx;
+}
+
 // Maximum acceleration: find where gaps are increasing fastest
 // Returns the index where the second derivative of gaps is largest
 static inline size_t tk_dvec_scores_max_acceleration (
@@ -235,13 +259,12 @@ static inline size_t tk_dvec_scores_max_acceleration (
   return max_idx;
 }
 
-// Find the first span where values stay within +/- tolerance
-// Returns the range [start, end]. If no stable span found, returns [max_idx, max_idx]
+// Find the longest span where values stay within +/- tolerance of the first value
+// Returns the range [start, end]. If no span found, returns [0, 0]
 static inline void tk_dvec_scores_tolerance (
   double *scores,
   size_t n,
   double tolerance,
-  size_t min_span,
   size_t *out_start,
   size_t *out_end
 ) {
@@ -250,19 +273,17 @@ static inline void tk_dvec_scores_tolerance (
     *out_end = 0;
     return;
   }
-
-  if (n == 1 || min_span <= 1) {
+  if (n == 1) {
     *out_start = 0;
     *out_end = 0;
     return;
   }
-
-  // Scan for stable spans
+  size_t best_start = 0;
+  size_t best_end = 0;
+  size_t best_len = 1;
   for (size_t i = 0; i < n; i++) {
     double base = scores[i];
     size_t span_end = i;
-
-    // Check how far this stable span extends
     for (size_t j = i + 1; j < n; j++) {
       if (fabs(scores[j] - base) <= tolerance) {
         span_end = j;
@@ -270,27 +291,15 @@ static inline void tk_dvec_scores_tolerance (
         break;
       }
     }
-
     size_t span_len = span_end - i + 1;
-    if (span_len >= min_span) {
-      *out_start = i;
-      *out_end = span_end;
-      return;
+    if (span_len > best_len) {
+      best_len = span_len;
+      best_start = i;
+      best_end = span_end;
     }
   }
-
-  // No stable span found, return position of max value
-  size_t max_idx = 0;
-  double max_val = scores[0];
-  for (size_t i = 1; i < n; i++) {
-    if (scores[i] > max_val) {
-      max_val = scores[i];
-      max_idx = i;
-    }
-  }
-
-  *out_start = max_idx;
-  *out_end = max_idx;
+  *out_start = best_start;
+  *out_end = best_end;
 }
 
 #endif
