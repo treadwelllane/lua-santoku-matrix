@@ -233,6 +233,35 @@ static inline size_t tk_dvec_scores_max_drop (
   return max_idx;
 }
 
+// Find initial plateau: values within tolerance of scores[0]
+// Returns the last index in the initial plateau starting from 0
+static inline size_t tk_dvec_scores_plateau (
+  double *scores,
+  size_t n,
+  double tolerance,
+  double *out_val
+) {
+  if (n == 0) {
+    if (out_val) *out_val = 0.0;
+    return 0;
+  }
+  if (n == 1) {
+    if (out_val) *out_val = scores[0];
+    return 0;
+  }
+  double base = scores[0];
+  size_t end_idx = 0;
+  for (size_t i = 1; i < n; i++) {
+    if (fabs(scores[i] - base) <= tolerance) {
+      end_idx = i;
+    } else {
+      break;
+    }
+  }
+  if (out_val) *out_val = scores[end_idx];
+  return end_idx;
+}
+
 // Maximum acceleration: find where gaps are increasing fastest
 // Returns the index where the second derivative of gaps is largest
 static inline size_t tk_dvec_scores_max_acceleration (
