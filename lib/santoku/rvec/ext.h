@@ -233,8 +233,8 @@ static inline double tk_csr_position(
     int64_t neighbor_pos = bin_ranks->a[i].i;
     uint32_t khi = tk_dumap_get(pos_buffer, neighbor_pos);
     if (khi != tk_dumap_end(pos_buffer)) {
-      double x = tk_dumap_val(pos_buffer, khi);  // position [0, m-1]
-      double y = (double)bin_ranks->a[i].p;       // raw hamming
+      double x = tk_dumap_val(pos_buffer, khi);
+      double y = (double)bin_ranks->a[i].p;
       sum_y += y;
       sum_xy += x * y;
       sum_y2 += y * y;
@@ -266,23 +266,15 @@ static inline double tk_csr_biserial(
     return 0.0;
   double rank_sum_1 = 0.0;
   uint64_t count_0 = 0, count_1 = 0;
-
-  // Handle tied weights using average ranks
   for (int64_t j = start_a; j < end_a; j++) {
     double rank = (double)(j - start_a);
     uint64_t count = 1;
     double weight = weights_a->a[j];
-
-    // Detect ties: consecutive positions with same weight
     while (j + 1 < end_a && weights_a->a[j + 1] == weight) {
       count++;
       j++;
     }
-
-    // Average rank for tied positions
     double average_rank = (rank + (rank + count - 1)) / 2.0 + 1.0;
-
-    // Assign average rank to all tied neighbors
     for (uint64_t k = 0; k < count; k++) {
       int64_t neighbor = neighbors_a->a[(uint64_t)j - k];
       if (tk_iuset_get(group_1, neighbor) != tk_iuset_end(group_1)) {
@@ -293,16 +285,12 @@ static inline double tk_csr_biserial(
       }
     }
   }
-
   if (n_a == 0)
     return 0.0;
-
-  // Perfect separation cases
-  if (count_0 == 0)
-    return 1.0;  // All neighbors in group_1 (perfect in-cluster)
-  if (count_1 == 0)
-    return 1.0;  // No neighbors in group_1 (perfect out-cluster separation)
-
+  if (count_0 == 0 && count_1 > 0)
+    return 1.0;
+  if (count_1 == 0 || count_0 == 0)
+    return 0.0;
   double U1 = rank_sum_1 - (count_1 * (count_1 + 1)) / 2.0;
   return 1.0 - (2.0 * U1) / (count_0 * count_1);
 }
@@ -318,33 +306,23 @@ static inline double tk_csr_variance_ratio(
   uint64_t n_a = (uint64_t)(end_a - start_a);
   if (n_a == 0 || !group_1)
     return 0.0;
-
-  // Build rank_buffer: neighbor → average_rank (handling ties)
   tk_dumap_clear(rank_buffer);
   int kha;
   for (int64_t j = start_a; j < end_a; j++) {
     double rank = (double)(j - start_a);
     uint64_t count = 1;
     double weight = weights_a->a[j];
-
-    // Detect ties: consecutive positions with same weight
     while (j + 1 < end_a && weights_a->a[j + 1] == weight) {
       count++;
       j++;
     }
-
-    // Average rank for tied positions
     double average_rank = (rank + (rank + count - 1)) / 2.0 + 1.0;
-
-    // Store averaged rank for each tied neighbor
     for (uint64_t k = 0; k < count; k++) {
       int64_t neighbor = neighbors_a->a[(uint64_t)j - k];
       uint32_t khi = tk_dumap_put(rank_buffer, neighbor, &kha);
       tk_dumap_setval(rank_buffer, khi, average_rank);
     }
   }
-
-  // Compute group means and overall mean
   double rank_sum_0 = 0.0, rank_sum_1 = 0.0;
   uint64_t count_0 = 0, count_1 = 0;
   int64_t neighbor;
@@ -358,20 +336,13 @@ static inline double tk_csr_variance_ratio(
       count_0++;
     }
   }))
-
   if (count_0 == 0 || count_1 == 0)
     return 0.0;
-
   double mean_rank_0 = rank_sum_0 / count_0;
   double mean_rank_1 = rank_sum_1 / count_1;
   double overall_mean = (rank_sum_0 + rank_sum_1) / (count_0 + count_1);
-
-  // Compute sum of squares between and within groups
-  // SS_between = sum of n_i * (mean_i - overall_mean)^2
   double ss_between = count_0 * (mean_rank_0 - overall_mean) * (mean_rank_0 - overall_mean)
                     + count_1 * (mean_rank_1 - overall_mean) * (mean_rank_1 - overall_mean);
-
-  // SS_within = sum of (x_ij - mean_i)^2 for all observations
   double ss_within = 0.0;
   tk_umap_foreach(rank_buffer, neighbor, rank, ({
     if (tk_iuset_get(group_1, neighbor) != tk_iuset_end(group_1)) {
@@ -382,16 +353,10 @@ static inline double tk_csr_variance_ratio(
       ss_within += diff * diff;
     }
   }))
-
-  // Compute eta-squared (effect size measure from ANOVA)
-  // η² = SS_between / SS_total, ranges [0, 1]
-  // 0 = no separation (groups have same mean), 1 = perfect separation
   double ss_total = ss_between + ss_within;
   if (ss_total <= 1e-12) {
-    // All ranks identical - no variation to explain
     return 0.0;
   }
-
   return ss_between / ss_total;
 }
 
