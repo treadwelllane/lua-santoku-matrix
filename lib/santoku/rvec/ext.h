@@ -303,7 +303,6 @@ static inline double tk_csr_variance_ratio(
   if (n_a == 0 || !group_1)
     return 0.0;
 
-  // Build rank_buffer: neighbor → average_rank (handling ties)
   tk_dumap_clear(rank_buffer);
   int kha;
   for (int64_t j = start_a; j < end_a; j++) {
@@ -311,16 +310,13 @@ static inline double tk_csr_variance_ratio(
     uint64_t count = 1;
     double weight = weights_a->a[j];
 
-    // Detect ties: consecutive positions with same weight
     while (j + 1 < end_a && weights_a->a[j + 1] == weight) {
       count++;
       j++;
     }
 
-    // Average rank for tied positions
     double average_rank = (rank + (rank + count - 1)) / 2.0 + 1.0;
 
-    // Store averaged rank for each tied neighbor
     for (uint64_t k = 0; k < count; k++) {
       int64_t neighbor = neighbors_a->a[(uint64_t)j - k];
       uint32_t khi = tk_dumap_put(rank_buffer, neighbor, &kha);
@@ -328,7 +324,6 @@ static inline double tk_csr_variance_ratio(
     }
   }
 
-  // Compute group means and overall mean
   double rank_sum_0 = 0.0, rank_sum_1 = 0.0;
   uint64_t count_0 = 0, count_1 = 0;
   int64_t neighbor;
@@ -372,7 +367,6 @@ static inline double tk_csr_variance_ratio(
   // 0 = no separation (groups have same mean), 1 = perfect separation
   double ss_total = ss_between + ss_within;
   if (ss_total <= 1e-12) {
-    // All ranks identical - no variation to explain
     return 0.0;
   }
 
