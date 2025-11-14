@@ -168,7 +168,6 @@ static inline uint64_t tk_parallel_sfx(tk_cvec_bits_hamming) (
     dist += (uint64_t) __builtin_popcountll(xor_val);
   }
 
-  // Handle remaining bytes when n_chunks * 8 < main_bytes
   for (uint64_t bi = n_chunks * 8; bi < main_bytes; bi++) {
     dist += (uint64_t) __builtin_popcount(a[bi] ^ b[bi]);
   }
@@ -192,13 +191,11 @@ static inline uint64_t tk_parallel_sfx(tk_cvec_bits_hamming) (
     dist += (uint64_t) __builtin_popcountll(xor_val);
   }
 
-  // Handle remaining bytes when n_chunks * 8 < main_bytes
   for (uint64_t bi = n_chunks * 8; bi < main_bytes; bi++) {
     dist += (uint64_t) __builtin_popcount(a[bi] ^ b[bi]);
   }
 
 #else
-  // Byte-by-byte to handle unaligned pointers
   TK_PARALLEL_FOR(reduction(+:dist))
   for (uint64_t i = 0; i < main_bytes; i++) {
     dist += (uint64_t) __builtin_popcount(a[i] ^ b[i]);
@@ -249,7 +246,6 @@ static inline uint64_t tk_parallel_sfx(tk_cvec_bits_hamming_mask) (
     dist += (uint64_t) __builtin_popcountll(masked_xor);
   }
 
-  // Handle remaining bytes when n_chunks * 8 < main_bytes
   for (uint64_t i = n_chunks * 8; i < main_bytes; i++) {
     dist += (uint64_t) __builtin_popcount((a[i] ^ b[i]) & mask[i]);
   }
