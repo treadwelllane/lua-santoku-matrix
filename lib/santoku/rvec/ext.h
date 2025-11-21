@@ -476,9 +476,9 @@ static inline double tk_csr_ndcg_distance(
   if (idcg < 1e-10)
     return 0.0;
 
-  // Return negative nDCG for consistency with other distance metrics
-  // (higher nDCG = better ranking = lower distance)
-  return -(dcg / idcg);
+  // Return nDCG directly (not negated) since optimizer maximizes
+  // Higher nDCG = better ranking = higher score to maximize
+  return dcg / idcg;
 }
 
 #endif
