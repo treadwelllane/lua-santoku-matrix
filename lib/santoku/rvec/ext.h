@@ -387,4 +387,98 @@ static inline double tk_csr_variance_ratio(
   return ss_between / ss_total;
 }
 
+static inline double tk_csr_ndcg_distance(
+  tk_ivec_t *neighbors_a,
+  tk_dvec_t *weights_a,
+  int64_t start_a,
+  int64_t end_a,
+  tk_pvec_t *sorted_bin_ranks,
+  tk_dumap_t *weight_map
+) {
+  uint64_t m = (uint64_t)(end_a - start_a);
+  if (m == 0 || !sorted_bin_ranks || sorted_bin_ranks->n == 0)
+    return 0.0;
+  if (sorted_bin_ranks->n < 1)
+    return 0.0;
+
+  // Build a map: neighbor_pos → weight
+  tk_dumap_clear(weight_map);
+  int kha;
+  for (int64_t j = start_a; j < end_a; j++) {
+    int64_t neighbor_pos = neighbors_a->a[j];
+    double weight = weights_a->a[j];
+    uint32_t khi = tk_dumap_put(weight_map, neighbor_pos, &kha);
+    tk_dumap_setval(weight_map, khi, weight);
+  }
+
+  // Compute DCG based on hamming distance ranking
+  // sorted_bin_ranks is already sorted by hamming distance (ascending)
+  double dcg = 0.0;
+  for (uint64_t i = 0; i < sorted_bin_ranks->n; i++) {
+    int64_t neighbor_pos = sorted_bin_ranks->a[i].i;
+    uint32_t khi = tk_dumap_get(weight_map, neighbor_pos);
+    if (khi != tk_dumap_end(weight_map)) {
+      double relevance = tk_dumap_val(weight_map, khi);
+      double position = (double)(i + 1);  // 1-indexed position
+      double discount = log2(position + 1.0);
+      dcg += relevance / discount;
+    }
+  }
+
+  // Compute ideal DCG (IDCG) - sort weights in descending order
+  double idcg = 0.0;
+  // Collect all weights for items in the ranking
+  uint64_t n_items = 0;
+  for (uint64_t i = 0; i < sorted_bin_ranks->n; i++) {
+    int64_t neighbor_pos = sorted_bin_ranks->a[i].i;
+    if (tk_dumap_get(weight_map, neighbor_pos) != tk_dumap_end(weight_map))
+      n_items++;
+  }
+
+  if (n_items == 0)
+    return 0.0;
+
+  // Create array of weights and sort descending
+  double *sorted_weights = malloc(n_items * sizeof(double));
+  if (!sorted_weights)
+    return 0.0;
+
+  uint64_t idx = 0;
+  for (uint64_t i = 0; i < sorted_bin_ranks->n && idx < n_items; i++) {
+    int64_t neighbor_pos = sorted_bin_ranks->a[i].i;
+    uint32_t khi = tk_dumap_get(weight_map, neighbor_pos);
+    if (khi != tk_dumap_end(weight_map)) {
+      sorted_weights[idx++] = tk_dumap_val(weight_map, khi);
+    }
+  }
+
+  // Sort weights descending (simple bubble sort for small arrays, or use qsort)
+  for (uint64_t i = 0; i < n_items - 1; i++) {
+    for (uint64_t j = i + 1; j < n_items; j++) {
+      if (sorted_weights[j] > sorted_weights[i]) {
+        double tmp = sorted_weights[i];
+        sorted_weights[i] = sorted_weights[j];
+        sorted_weights[j] = tmp;
+      }
+    }
+  }
+
+  // Compute IDCG
+  for (uint64_t i = 0; i < n_items; i++) {
+    double relevance = sorted_weights[i];
+    double position = (double)(i + 1);
+    double discount = log2(position + 1.0);
+    idcg += relevance / discount;
+  }
+
+  free(sorted_weights);
+
+  if (idcg < 1e-10)
+    return 0.0;
+
+  // Return negative nDCG for consistency with other distance metrics
+  // (higher nDCG = better ranking = lower distance)
+  return -(dcg / idcg);
+}
+
 #endif
