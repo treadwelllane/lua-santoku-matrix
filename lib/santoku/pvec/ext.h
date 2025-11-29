@@ -424,6 +424,74 @@ static inline size_t tk_pvec_scores_first_gap (
   return n - 1;
 }
 
+// First gap ratio method: cut at first gap exceeding alpha * median(gaps)
+// Data-driven threshold - robust because median isn't affected by the outlier gap
+static inline size_t tk_pvec_scores_first_gap_ratio (
+  tk_pvec_t *v,
+  double alpha,
+  int64_t *out_val
+) {
+  size_t n = v->n;
+  if (n < 2) {
+    if (out_val) *out_val = (n > 0) ? v->a[0].p : 0;
+    return n > 0 ? n - 1 : 0;
+  }
+  if (alpha <= 0.0) alpha = 3.0;
+
+  size_t n_gaps = n - 1;
+  int64_t *gaps = (int64_t *)malloc(n_gaps * sizeof(int64_t));
+  if (!gaps) {
+    if (out_val) *out_val = v->a[n - 1].p;
+    return n - 1;
+  }
+
+  for (size_t i = 0; i < n_gaps; i++) {
+    gaps[i] = v->a[i + 1].p - v->a[i].p;
+  }
+
+  // Sort gaps to find median (simple insertion sort for small arrays)
+  for (size_t i = 1; i < n_gaps; i++) {
+    int64_t key = gaps[i];
+    size_t j = i;
+    while (j > 0 && gaps[j - 1] > key) {
+      gaps[j] = gaps[j - 1];
+      j--;
+    }
+    gaps[j] = key;
+  }
+
+  // Median
+  int64_t median_gap;
+  if (n_gaps % 2 == 1) {
+    median_gap = gaps[n_gaps / 2];
+  } else {
+    median_gap = (gaps[n_gaps / 2 - 1] + gaps[n_gaps / 2]) / 2;
+  }
+  free(gaps);
+
+  // Handle edge case where median is 0 (all identical values)
+  if (median_gap == 0) {
+    if (out_val) *out_val = v->a[n - 1].p;
+    return n - 1;
+  }
+
+  int64_t threshold = (int64_t)(alpha * (double)median_gap);
+  if (threshold < 1) threshold = 1;
+
+  // Find first gap exceeding threshold
+  for (size_t i = 0; i < n - 1; i++) {
+    int64_t gap = v->a[i + 1].p - v->a[i].p;
+    if (gap > threshold) {
+      if (out_val) *out_val = v->a[i].p;
+      return i;
+    }
+  }
+
+  // No significant gap found, return all
+  if (out_val) *out_val = v->a[n - 1].p;
+  return n - 1;
+}
+
 // Otsu's method for bimodal threshold selection
 // Finds the cut point that maximizes inter-class variance
 // For sorted distance data: separates "close" (relevant) from "far" (irrelevant)
