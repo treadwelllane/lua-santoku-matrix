@@ -791,6 +791,73 @@ static inline size_t tk_rvec_scores_first_gap (
   return n - 1;
 }
 
+// First gap ratio method: cut at first gap exceeding alpha * median(gaps)
+// Data-driven threshold - robust because median isn't affected by the outlier gap
+static inline size_t tk_rvec_scores_first_gap_ratio (
+  tk_rvec_t *v,
+  double alpha,
+  double *out_val
+) {
+  size_t n = v->n;
+  if (n < 2) {
+    if (out_val) *out_val = (n > 0) ? v->a[0].d : 0.0;
+    return n > 0 ? n - 1 : 0;
+  }
+  if (alpha <= 0.0) alpha = 3.0;
+
+  size_t n_gaps = n - 1;
+  double *gaps = (double *)malloc(n_gaps * sizeof(double));
+  if (!gaps) {
+    if (out_val) *out_val = v->a[n - 1].d;
+    return n - 1;
+  }
+
+  for (size_t i = 0; i < n_gaps; i++) {
+    gaps[i] = v->a[i + 1].d - v->a[i].d;
+  }
+
+  // Sort gaps to find median (simple insertion sort for small arrays)
+  for (size_t i = 1; i < n_gaps; i++) {
+    double key = gaps[i];
+    size_t j = i;
+    while (j > 0 && gaps[j - 1] > key) {
+      gaps[j] = gaps[j - 1];
+      j--;
+    }
+    gaps[j] = key;
+  }
+
+  // Median
+  double median_gap;
+  if (n_gaps % 2 == 1) {
+    median_gap = gaps[n_gaps / 2];
+  } else {
+    median_gap = (gaps[n_gaps / 2 - 1] + gaps[n_gaps / 2]) / 2.0;
+  }
+  free(gaps);
+
+  // Handle edge case where median is 0 (all identical values)
+  if (median_gap <= 0.0) {
+    if (out_val) *out_val = v->a[n - 1].d;
+    return n - 1;
+  }
+
+  double threshold = alpha * median_gap;
+
+  // Find first gap exceeding threshold
+  for (size_t i = 0; i < n - 1; i++) {
+    double gap = v->a[i + 1].d - v->a[i].d;
+    if (gap > threshold) {
+      if (out_val) *out_val = v->a[i].d;
+      return i;
+    }
+  }
+
+  // No significant gap found, return all
+  if (out_val) *out_val = v->a[n - 1].d;
+  return n - 1;
+}
+
 // Otsu's method for bimodal threshold selection
 // Finds the cut point that maximizes inter-class variance
 // For sorted distance data: separates "close" (relevant) from "far" (irrelevant)
