@@ -767,6 +767,30 @@ static inline size_t tk_rvec_scores_kneedle (
   return final_knee;
 }
 
+// First gap method: cut at first gap exceeding threshold
+// More conservative than max_gap - finds first significant break rather than largest
+static inline size_t tk_rvec_scores_first_gap (
+  tk_rvec_t *v,
+  double threshold,
+  double *out_val
+) {
+  size_t n = v->n;
+  if (n < 2) {
+    if (out_val) *out_val = (n > 0) ? v->a[0].d : 0.0;
+    return n > 0 ? n - 1 : 0;
+  }
+  for (size_t i = 0; i < n - 1; i++) {
+    double gap = v->a[i + 1].d - v->a[i].d;
+    if (gap > threshold) {
+      if (out_val) *out_val = v->a[i].d;
+      return i;
+    }
+  }
+  // No significant gap found, return all
+  if (out_val) *out_val = v->a[n - 1].d;
+  return n - 1;
+}
+
 // Otsu's method for bimodal threshold selection
 // Finds the cut point that maximizes inter-class variance
 // For sorted distance data: separates "close" (relevant) from "far" (irrelevant)
