@@ -180,40 +180,6 @@ static inline size_t tk_dvec_scores_plateau (
   return end_idx;
 }
 
-static inline size_t tk_dvec_scores_max_acceleration (
-  double *scores,
-  size_t n,
-  double *out_val
-) {
-  if (n < 3) {
-    if (out_val) *out_val = (n > 0) ? scores[0] : 0.0;
-    return n > 0 ? n - 1 : 0;
-  }
-  // Check for flat data
-  double min_val = scores[0], max_val = scores[0];
-  for (size_t i = 1; i < n; i++) {
-    if (scores[i] < min_val) min_val = scores[i];
-    if (scores[i] > max_val) max_val = scores[i];
-  }
-  if (max_val - min_val < 1e-10) {
-    if (out_val) *out_val = scores[n - 1];
-    return n - 1;
-  }
-  double max_accel = -DBL_MAX;
-  size_t max_idx = 0;
-  for (size_t i = 0; i < n - 2; i++) {
-    double gap1 = scores[i + 1] - scores[i];
-    double gap2 = scores[i + 2] - scores[i + 1];
-    double accel = gap2 - gap1;
-    if (accel > max_accel) {
-      max_accel = accel;
-      max_idx = i;
-    }
-  }
-  if (out_val) *out_val = scores[max_idx];
-  return max_idx;
-}
-
 static inline size_t tk_dvec_scores_kneedle (
   double *scores,
   size_t n,
@@ -284,6 +250,7 @@ static inline size_t tk_dvec_scores_kneedle (
 
 // First gap method: cut at first gap exceeding threshold
 // More conservative than max_gap - finds first significant break rather than largest
+// Uses fabs() to handle both ascending (distances) and descending (scores) data
 static inline size_t tk_dvec_scores_first_gap (
   double *scores,
   size_t n,
@@ -295,7 +262,7 @@ static inline size_t tk_dvec_scores_first_gap (
     return n > 0 ? n - 1 : 0;
   }
   for (size_t i = 0; i < n - 1; i++) {
-    double gap = scores[i + 1] - scores[i];
+    double gap = fabs(scores[i + 1] - scores[i]);
     if (gap > threshold) {
       if (out_val) *out_val = scores[i];
       return i;
@@ -308,6 +275,7 @@ static inline size_t tk_dvec_scores_first_gap (
 
 // First gap ratio method: cut at first gap exceeding alpha * median(gaps)
 // Data-driven threshold - robust because median isn't affected by the outlier gap
+// Uses fabs() to handle both ascending (distances) and descending (scores) data
 static inline size_t tk_dvec_scores_first_gap_ratio (
   double *scores,
   size_t n,
@@ -327,8 +295,9 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
     return n - 1;
   }
 
+  // Use fabs to handle both ascending and descending data
   for (size_t i = 0; i < n_gaps; i++) {
-    gaps[i] = scores[i + 1] - scores[i];
+    gaps[i] = fabs(scores[i + 1] - scores[i]);
   }
 
   // Sort gaps to find median (simple insertion sort for small arrays)
@@ -351,17 +320,27 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
   }
   free(gaps);
 
-  // Handle edge case where median is 0 (all identical values)
+  // Handle edge case where median is 0 (most gaps are 0/identical)
+  // Fall back to finding max gap instead of returning all
   if (median_gap <= 0.0) {
-    if (out_val) *out_val = scores[n - 1];
-    return n - 1;
+    double max_gap = 0.0;
+    size_t max_idx = n - 1;
+    for (size_t i = 0; i < n - 1; i++) {
+      double gap = fabs(scores[i + 1] - scores[i]);
+      if (gap > max_gap) {
+        max_gap = gap;
+        max_idx = i;
+      }
+    }
+    if (out_val) *out_val = scores[max_idx];
+    return max_idx;
   }
 
   double threshold = alpha * median_gap;
 
   // Find first gap exceeding threshold
   for (size_t i = 0; i < n - 1; i++) {
-    double gap = scores[i + 1] - scores[i];
+    double gap = fabs(scores[i + 1] - scores[i]);
     if (gap > threshold) {
       if (out_val) *out_val = scores[i];
       return i;
