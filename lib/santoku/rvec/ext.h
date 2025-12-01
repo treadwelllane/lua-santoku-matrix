@@ -638,40 +638,6 @@ static inline size_t tk_rvec_scores_plateau (
   return end_idx;
 }
 
-static inline size_t tk_rvec_scores_max_acceleration (
-  tk_rvec_t *v,
-  double *out_val
-) {
-  size_t n = v->n;
-  if (n < 3) {
-    if (out_val) *out_val = (n > 0) ? v->a[0].d : 0.0;
-    return n > 0 ? n - 1 : 0;
-  }
-  // Check for flat data
-  double min_val = v->a[0].d, max_val = v->a[0].d;
-  for (size_t i = 1; i < n; i++) {
-    if (v->a[i].d < min_val) min_val = v->a[i].d;
-    if (v->a[i].d > max_val) max_val = v->a[i].d;
-  }
-  if (max_val - min_val < 1e-10) {
-    if (out_val) *out_val = v->a[n - 1].d;
-    return n - 1;
-  }
-  double max_accel = -DBL_MAX;
-  size_t max_idx = 0;
-  for (size_t i = 0; i < n - 2; i++) {
-    double gap1 = v->a[i + 1].d - v->a[i].d;
-    double gap2 = v->a[i + 2].d - v->a[i + 1].d;
-    double accel = gap2 - gap1;
-    if (accel > max_accel) {
-      max_accel = accel;
-      max_idx = i;
-    }
-  }
-  if (out_val) *out_val = v->a[max_idx].d;
-  return max_idx;
-}
-
 static inline size_t tk_rvec_scores_kneedle (
   tk_rvec_t *v,
   double sensitivity,
@@ -742,6 +708,7 @@ static inline size_t tk_rvec_scores_kneedle (
 
 // First gap method: cut at first gap exceeding threshold
 // More conservative than max_gap - finds first significant break rather than largest
+// Uses fabs() to handle both ascending (distances) and descending (scores) data
 static inline size_t tk_rvec_scores_first_gap (
   tk_rvec_t *v,
   double threshold,
@@ -753,7 +720,7 @@ static inline size_t tk_rvec_scores_first_gap (
     return n > 0 ? n - 1 : 0;
   }
   for (size_t i = 0; i < n - 1; i++) {
-    double gap = v->a[i + 1].d - v->a[i].d;
+    double gap = fabs(v->a[i + 1].d - v->a[i].d);
     if (gap > threshold) {
       if (out_val) *out_val = v->a[i].d;
       return i;
@@ -766,6 +733,7 @@ static inline size_t tk_rvec_scores_first_gap (
 
 // First gap ratio method: cut at first gap exceeding alpha * median(gaps)
 // Data-driven threshold - robust because median isn't affected by the outlier gap
+// Uses fabs() to handle both ascending (distances) and descending (scores) data
 static inline size_t tk_rvec_scores_first_gap_ratio (
   tk_rvec_t *v,
   double alpha,
@@ -785,8 +753,9 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
     return n - 1;
   }
 
+  // Use fabs to handle both ascending and descending data
   for (size_t i = 0; i < n_gaps; i++) {
-    gaps[i] = v->a[i + 1].d - v->a[i].d;
+    gaps[i] = fabs(v->a[i + 1].d - v->a[i].d);
   }
 
   // Sort gaps to find median (simple insertion sort for small arrays)
@@ -809,17 +778,27 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
   }
   free(gaps);
 
-  // Handle edge case where median is 0 (all identical values)
+  // Handle edge case where median is 0 (most gaps are 0/identical)
+  // Fall back to finding max gap instead of returning all
   if (median_gap <= 0.0) {
-    if (out_val) *out_val = v->a[n - 1].d;
-    return n - 1;
+    double max_gap = 0.0;
+    size_t max_idx = n - 1;
+    for (size_t i = 0; i < n - 1; i++) {
+      double gap = fabs(v->a[i + 1].d - v->a[i].d);
+      if (gap > max_gap) {
+        max_gap = gap;
+        max_idx = i;
+      }
+    }
+    if (out_val) *out_val = v->a[max_idx].d;
+    return max_idx;
   }
 
   double threshold = alpha * median_gap;
 
   // Find first gap exceeding threshold
   for (size_t i = 0; i < n - 1; i++) {
-    double gap = v->a[i + 1].d - v->a[i].d;
+    double gap = fabs(v->a[i + 1].d - v->a[i].d);
     if (gap > threshold) {
       if (out_val) *out_val = v->a[i].d;
       return i;
