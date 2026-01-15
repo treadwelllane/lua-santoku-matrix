@@ -801,8 +801,6 @@ static inline size_t tk_rvec_scores_first_gap (
   return n - 1;
 }
 
-#define tk_rvec_scores_first_gap_ratio tk_rvec_scores_first_gap
-
 // Otsu's method for bimodal threshold selection
 // Finds the cut point that maximizes inter-class variance
 // For sorted distance data: separates "close" (relevant) from "far" (irrelevant)
