@@ -634,10 +634,24 @@ static inline size_t tk_rvec_scores_plateau (
     if (out_val) *out_val = v->a[0].d;
     return 0;
   }
+  if (tolerance <= 0.0) tolerance = 0.01;
+
+  double min_score = v->a[0].d, max_score = v->a[0].d;
+  for (size_t i = 1; i < n; i++) {
+    if (v->a[i].d < min_score) min_score = v->a[i].d;
+    if (v->a[i].d > max_score) max_score = v->a[i].d;
+  }
+  double range = max_score - min_score;
+  if (range <= 0.0) {
+    if (out_val) *out_val = v->a[n - 1].d;
+    return n - 1;
+  }
+
+  double abs_tolerance = tolerance * range;
   double base = v->a[0].d;
   size_t end_idx = 0;
   for (size_t i = 1; i < n; i++) {
-    if (fabs(v->a[i].d - base) <= tolerance) {
+    if (fabs(v->a[i].d - base) <= abs_tolerance) {
       end_idx = i;
     } else {
       break;
@@ -715,35 +729,10 @@ static inline size_t tk_rvec_scores_kneedle (
   return final_knee;
 }
 
-// First gap method: cut at first gap exceeding threshold
-// More conservative than max_gap - finds first significant break rather than largest
-// Uses fabs() to handle both ascending (distances) and descending (scores) data
-static inline size_t tk_rvec_scores_first_gap (
-  tk_rvec_t *v,
-  double threshold,
-  double *out_val
-) {
-  size_t n = v->n;
-  if (n < 2) {
-    if (out_val) *out_val = (n > 0) ? v->a[0].d : 0.0;
-    return n > 0 ? n - 1 : 0;
-  }
-  for (size_t i = 0; i < n - 1; i++) {
-    double gap = fabs(v->a[i + 1].d - v->a[i].d);
-    if (gap >= threshold) {
-      if (out_val) *out_val = v->a[i].d;
-      return i;
-    }
-  }
-  // No significant gap found, return all
-  if (out_val) *out_val = v->a[n - 1].d;
-  return n - 1;
-}
-
-// First gap ratio method: cut at first gap exceeding alpha * median(gaps)
+// First gap method: cut at first gap exceeding alpha * median(gaps)
 // Data-driven threshold - robust because median isn't affected by the outlier gap
 // Uses fabs() to handle both ascending (distances) and descending (scores) data
-static inline size_t tk_rvec_scores_first_gap_ratio (
+static inline size_t tk_rvec_scores_first_gap (
   tk_rvec_t *v,
   double alpha,
   double *out_val
@@ -762,12 +751,10 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
     return n - 1;
   }
 
-  // Use fabs to handle both ascending and descending data
   for (size_t i = 0; i < n_gaps; i++) {
     gaps[i] = fabs(v->a[i + 1].d - v->a[i].d);
   }
 
-  // Sort gaps to find median (simple insertion sort for small arrays)
   for (size_t i = 1; i < n_gaps; i++) {
     double key = gaps[i];
     size_t j = i;
@@ -778,7 +765,6 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
     gaps[j] = key;
   }
 
-  // Median
   double median_gap;
   if (n_gaps % 2 == 1) {
     median_gap = gaps[n_gaps / 2];
@@ -787,8 +773,6 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
   }
   free(gaps);
 
-  // Handle edge case where median is 0 (most gaps are 0/identical)
-  // Fall back to finding max gap instead of returning all
   if (median_gap <= 0.0) {
     double max_gap = 0.0;
     size_t max_idx = n - 1;
@@ -805,7 +789,6 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
 
   double threshold = alpha * median_gap;
 
-  // Find first gap exceeding threshold
   for (size_t i = 0; i < n - 1; i++) {
     double gap = fabs(v->a[i + 1].d - v->a[i].d);
     if (gap > threshold) {
@@ -814,10 +797,11 @@ static inline size_t tk_rvec_scores_first_gap_ratio (
     }
   }
 
-  // No significant gap found, return all
   if (out_val) *out_val = v->a[n - 1].d;
   return n - 1;
 }
+
+#define tk_rvec_scores_first_gap_ratio tk_rvec_scores_first_gap
 
 // Otsu's method for bimodal threshold selection
 // Finds the cut point that maximizes inter-class variance

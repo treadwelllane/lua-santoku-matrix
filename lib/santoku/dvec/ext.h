@@ -157,6 +157,8 @@ static inline size_t tk_dvec_scores_max_gap (
   return max_idx;
 }
 
+// Plateau method: find where scores stop being within tolerance of the first score
+// Uses relative tolerance: tolerance * range where range = max - min
 static inline size_t tk_dvec_scores_plateau (
   double *scores,
   size_t n,
@@ -171,10 +173,24 @@ static inline size_t tk_dvec_scores_plateau (
     if (out_val) *out_val = scores[0];
     return 0;
   }
+  if (tolerance <= 0.0) tolerance = 0.01;
+
+  double min_score = scores[0], max_score = scores[0];
+  for (size_t i = 1; i < n; i++) {
+    if (scores[i] < min_score) min_score = scores[i];
+    if (scores[i] > max_score) max_score = scores[i];
+  }
+  double range = max_score - min_score;
+  if (range <= 0.0) {
+    if (out_val) *out_val = scores[n - 1];
+    return n - 1;
+  }
+
+  double abs_tolerance = tolerance * range;
   double base = scores[0];
   size_t end_idx = 0;
   for (size_t i = 1; i < n; i++) {
-    if (fabs(scores[i] - base) <= tolerance) {
+    if (fabs(scores[i] - base) <= abs_tolerance) {
       end_idx = i;
     } else {
       break;
@@ -255,32 +271,10 @@ static inline size_t tk_dvec_scores_kneedle (
 // First gap method: cut at first gap exceeding threshold
 // More conservative than max_gap - finds first significant break rather than largest
 // Uses fabs() to handle both ascending (distances) and descending (scores) data
-static inline size_t tk_dvec_scores_first_gap (
-  double *scores,
-  size_t n,
-  double threshold,
-  double *out_val
-) {
-  if (n < 2) {
-    if (out_val) *out_val = (n > 0) ? scores[0] : 0.0;
-    return n > 0 ? n - 1 : 0;
-  }
-  for (size_t i = 0; i < n - 1; i++) {
-    double gap = fabs(scores[i + 1] - scores[i]);
-    if (gap >= threshold) {
-      if (out_val) *out_val = scores[i];
-      return i;
-    }
-  }
-  // No significant gap found, return all
-  if (out_val) *out_val = scores[n - 1];
-  return n - 1;
-}
-
-// First gap ratio method: cut at first gap exceeding alpha * median(gaps)
+// First gap method: cut at first gap exceeding alpha * median(gaps)
 // Data-driven threshold - robust because median isn't affected by the outlier gap
 // Uses fabs() to handle both ascending (distances) and descending (scores) data
-static inline size_t tk_dvec_scores_first_gap_ratio (
+static inline size_t tk_dvec_scores_first_gap (
   double *scores,
   size_t n,
   double alpha,
@@ -299,12 +293,11 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
     return n - 1;
   }
 
-  // Use fabs to handle both ascending and descending data
   for (size_t i = 0; i < n_gaps; i++) {
     gaps[i] = fabs(scores[i + 1] - scores[i]);
   }
 
-  // Sort gaps to find median (simple insertion sort for small arrays)
+  // Sort gaps to find median
   for (size_t i = 1; i < n_gaps; i++) {
     double key = gaps[i];
     size_t j = i;
@@ -315,7 +308,6 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
     gaps[j] = key;
   }
 
-  // Median
   double median_gap;
   if (n_gaps % 2 == 1) {
     median_gap = gaps[n_gaps / 2];
@@ -324,8 +316,6 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
   }
   free(gaps);
 
-  // Handle edge case where median is 0 (most gaps are 0/identical)
-  // Fall back to finding max gap instead of returning all
   if (median_gap <= 0.0) {
     double max_gap = 0.0;
     size_t max_idx = n - 1;
@@ -342,7 +332,6 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
 
   double threshold = alpha * median_gap;
 
-  // Find first gap exceeding threshold
   for (size_t i = 0; i < n - 1; i++) {
     double gap = fabs(scores[i + 1] - scores[i]);
     if (gap > threshold) {
@@ -351,10 +340,11 @@ static inline size_t tk_dvec_scores_first_gap_ratio (
     }
   }
 
-  // No significant gap found, return all
   if (out_val) *out_val = scores[n - 1];
   return n - 1;
 }
+
+#define tk_dvec_scores_first_gap_ratio tk_dvec_scores_first_gap
 
 // Otsu's method for bimodal threshold selection
 // Finds the cut point that maximizes inter-class variance
