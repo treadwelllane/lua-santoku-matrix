@@ -213,7 +213,7 @@ int luaopen_santoku_rvec (lua_State *L)
   lua_newtable(L); // t
   luaL_register(L, NULL, tk_rvec_lua_fns); // t
   luaL_register(L, NULL, tk_rvec_lua_ext_fns); // t
-  tk_rvec_create(L, 0, 0, 0);
+  tk_rvec_create(L, 0);
   luaL_getmetafield(L, -1, "__index");
   luaL_register(L, NULL, tk_rvec_lua_mt_fns); // t
   luaL_register(L, NULL, tk_rvec_lua_mt_ext_fns); // t
